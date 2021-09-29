@@ -75,7 +75,7 @@ fn main() -> io::Result<()> {
 
     match rust_fork()? {
         ForkRes::Parent(child_pid) => {
-            println!("parent end");
+            println!("parent end, child pid: {}", child_pid);
             Ok(())
         },
         ForkRes::Child => {
