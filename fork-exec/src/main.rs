@@ -45,6 +45,7 @@ fn rust_execv(path: &str, args: &[&str]) -> io::Result<()> {
     let path1 = CString::new(path)?;
     let path = path1.as_ptr();
 
+    // same here, keep argv1 one around so the CStrings are not deallocated too early
     let mut argv1 = Vec::new();
     for arg in args {
         // turn the &str into a *const c_char
@@ -57,7 +58,7 @@ fn rust_execv(path: &str, args: &[&str]) -> io::Result<()> {
     // turn the Vec<*const c_char> into a *const *const c_char
     let argv = argv.as_ptr();
 
-    let res = unsafe { execv(path, argv) };
+    let _ = unsafe { execv(path, argv) };
 
     Err(io::Error::last_os_error())
     // if res < 0 {
