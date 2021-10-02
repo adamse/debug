@@ -110,13 +110,88 @@ fn execv(path: &str, args: &[&str]) -> io::Result<()> {
     Err(io::Error::last_os_error())
 }
 
-fn waitpid(pid: i32) -> io::Result<()> {
-    let res = unsafe { libc::waitpid(pid, ptr::null_mut(), 0) };
+#[derive(Debug)]
+enum Signal {
+    /// SIGHUP, signal 1
+    Hup,
+
+    /// SIGINT, signal 2
+    Int,
+
+    /// SIGTRAP, signal 5
+    Trap,
+
+    /// SIGKILL, signal 9
+    Kill,
+
+    /// SIGSTOP, signal 19
+    Stop,
+
+    /// Unknown signal
+    Unknown(i32),
+}
+
+impl From<i32> for Signal {
+    fn from(sig: i32) -> Self {
+        match sig {
+            1 => Signal::Hup,
+            2 => Signal::Int,
+            5 => Signal::Trap,
+            9 => Signal::Kill,
+            19 => Signal::Stop,
+            x => Signal::Unknown(x),
+        }
+    }
+}
+
+/// Status for child returned by waitpid.
+#[derive(Debug)]
+enum WaitPidStatus {
+    /// Child exited with exit status.
+    Exited(u8),
+
+    /// Child was terminated by a signal.
+    Signaled(Signal),
+
+    /// Child was stopped by a signal.
+    Stopped(Signal),
+
+    /// Child was continued.
+    Continued,
+}
+
+fn waitpid(pid: i32) -> io::Result<WaitPidStatus> {
+    // place to store status returned by waitpid
+    let mut status: i32 = 0;
+
+    let res = unsafe { libc::waitpid(pid, &mut status as *mut _, 0) };
+
+    // return if the waitpid call failed.
     if res < 0 {
         return Err(io::Error::last_os_error())
     }
 
-    Ok(())
+    // all the weird stuff here is from GNU libc's bits/waitstatus.h header
+
+    let term_sig = status & 0x7f;
+    let exit_status: u8 = ((status & 0xff00) >> 8) as u8;
+
+    // did the child call exit?
+    let exited = term_sig == 0;
+    // did child terminate with a signal?
+    let signaled = (((term_sig + 1) as i8) >> 1) > 0;
+    // was the child stopped?
+    let stopped = (status & 0xff) == 0x7f;
+
+    if exited {
+        Ok(WaitPidStatus::Exited(exit_status))
+    } else if stopped {
+        Ok(WaitPidStatus::Stopped(Signal::from(exit_status as i32)))
+    } else if signaled {
+        Ok(WaitPidStatus::Signaled(Signal::from(term_sig)))
+    } else {
+        Ok(WaitPidStatus::Stopped(Signal::Stop))
+    }
 }
 
 fn ptrace_setoptions(pid: i32, opts: usize) -> io::Result<()> {
@@ -131,7 +206,8 @@ fn debugger(pid: i32) -> io::Result<()> {
     println!("parent, child pid: {}", pid);
 
     // wait for child to ptrace(traceme)
-    waitpid(pid)?;
+    let res = waitpid(pid)?;
+    println!("{:?}", res);
 
     ptrace_setoptions(pid, libc::PTRACE_O_EXITKILL | libc::PTRACE_O_TRACEEXEC)?;
 
@@ -141,6 +217,9 @@ fn debugger(pid: i32) -> io::Result<()> {
     if res < 0 {
         return Err(io::Error::last_os_error())
     }
+
+    let res = waitpid(pid)?;
+    println!("{:?}", res);
 
     std::thread::sleep(std::time::Duration::from_millis(2000));
 
