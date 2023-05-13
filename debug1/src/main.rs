@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
+use std::io::BufRead;
 use libc;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -69,6 +70,29 @@ pub enum WaitPid {
         signal: i32,
     },
     Continued,
+}
+
+/// Memory range
+#[derive(Debug)]
+pub struct Mapping {
+    /// start address
+    pub start: u64,
+    /// end address
+    pub end: u64,
+    /// readable mapping
+    pub read: bool,
+    /// writeable mapping
+    pub write: bool,
+    /// executable mapping
+    pub exec: bool,
+    /// shared mapping
+    pub shared: bool,
+    /// private mapping (copy-on-write)
+    pub private: bool,
+    /// offset into file if a file mapping
+    pub offset: u64,
+    /// filename if a file mapping, may be `None` or nonsense otherwise
+    pub pathname: Option<String>,
 }
 
 /// ptrace utils
@@ -298,6 +322,7 @@ impl Debugger {
         ptrace::getregs(tracee)
     }
 
+    /// get the names of all the threads
     pub fn thread_names(&self) -> Result<HashMap<Pid, String>> {
         let mut names = HashMap::new();
 
@@ -310,6 +335,54 @@ impl Debugger {
         }
 
         Ok(names)
+    }
+
+    /// get the memory map for the process
+    pub fn memory_map(&self) -> Result<Vec<Mapping>> {
+        let pid = self.process.0;
+
+        let mut maps = vec![];
+
+        // parse /proc/pid/maps
+
+        // read file line by line
+        let file = std::fs::File::open(format!("/proc/{pid}/maps")).map_err(Error::ReadFile)?;
+        let file = std::io::BufReader::new(file);
+
+        for line in file.lines() {
+            let line = line.map_err(Error::ReadDir)?;
+
+            // 00400000-00452000 r-xp 00000000 08:02 173521      /usr/bin/dbus-daemon
+            // start-end perms offset _ _ pathname
+
+            let parts = line.split_whitespace().collect::<Vec<_>>();
+            let (start, end) = parts[0].split_once('-').unwrap();
+            let start = u64::from_str_radix(start, 16).unwrap();
+            let end = u64::from_str_radix(end, 16).unwrap();
+            let read = parts[1].contains('r');
+            let write = parts[1].contains('w');
+            let exec = parts[1].contains('x');
+            let shared = parts[1].contains('s');
+            let private = parts[1].contains('p');
+            let offset = u64::from_str_radix(parts[2], 16).unwrap();
+            let pathname = parts.get(5).map(|x| x.to_string());
+
+            maps.push(Mapping {
+                start,
+                end,
+                read,
+                write,
+                exec,
+                shared,
+                private,
+                offset,
+                pathname,
+            });
+
+        }
+
+
+        Ok(maps)
     }
 }
 
@@ -337,6 +410,7 @@ fn main() -> Result<()> {
 
     println!("{:#x?}", debugger.regs(process)?);
     println!("{:?}", debugger.thread_names()?);
+    println!("{:#x?}", debugger.memory_map()?);
 
     Ok(())
 }
