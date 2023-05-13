@@ -12,6 +12,9 @@ pub enum Error {
     /// Readdir related failure
     ReadDir(std::io::Error),
 
+    /// File reading related failure
+    ReadFile(std::io::Error),
+
     /// Event for unknown thread receieved
     UnknownThreadEvent(Pid),
 }
@@ -294,6 +297,20 @@ impl Debugger {
         // TODO: check that we're tracing tracee and that it is stopped?
         ptrace::getregs(tracee)
     }
+
+    pub fn thread_names(&self) -> Result<HashMap<Pid, String>> {
+        let mut names = HashMap::new();
+
+        let pid = self.process;
+
+        for tracee in self.tracees.keys().copied() {
+            let name = std::fs::read_to_string(format!("/proc/{pid}/task/{tracee}/comm"))
+                .map_err(Error::ReadFile)?;
+            names.insert(tracee, name.trim().to_owned());
+        }
+
+        Ok(names)
+    }
 }
 
 impl Drop for Debugger {
@@ -319,6 +336,7 @@ fn main() -> Result<()> {
     let debugger = Debugger::attach_process(process)?;
 
     println!("{:#x?}", debugger.regs(process)?);
+    println!("{:?}", debugger.thread_names()?);
 
     Ok(())
 }
