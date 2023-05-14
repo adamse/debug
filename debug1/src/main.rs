@@ -349,25 +349,22 @@ impl Debugger {
         let file = std::fs::File::open(format!("/proc/{pid}/maps")).map_err(Error::ReadFile)?;
         let file = std::io::BufReader::new(file);
 
-        for line in file.lines() {
-            let line = line.map_err(Error::ReadDir)?;
-
+        fn parse_line(line: &str) -> Option<Mapping> {
             // 00400000-00452000 r-xp 00000000 08:02 173521      /usr/bin/dbus-daemon
-            // start-end perms offset _ _ pathname
-
+            // start-end perms offset _ _ pathname(optional)
             let parts = line.split_whitespace().collect::<Vec<_>>();
-            let (start, end) = parts[0].split_once('-').unwrap();
-            let start = u64::from_str_radix(start, 16).unwrap();
-            let end = u64::from_str_radix(end, 16).unwrap();
+            let (start, end) = parts[0].split_once('-')?;
+            let start = u64::from_str_radix(start, 16).ok()?;
+            let end = u64::from_str_radix(end, 16).ok()?;
             let read = parts[1].contains('r');
             let write = parts[1].contains('w');
             let exec = parts[1].contains('x');
             let shared = parts[1].contains('s');
             let private = parts[1].contains('p');
-            let offset = u64::from_str_radix(parts[2], 16).unwrap();
+            let offset = u64::from_str_radix(parts[2], 16).ok()?;
             let pathname = parts.get(5).map(|x| x.to_string());
 
-            maps.push(Mapping {
+            Some(Mapping {
                 start,
                 end,
                 read,
@@ -377,10 +374,15 @@ impl Debugger {
                 private,
                 offset,
                 pathname,
-            });
-
+            })
         }
 
+        for line in file.lines() {
+            let line = line.map_err(Error::ReadDir)?;
+            if let Some(mapping) = parse_line(&line) {
+                maps.push(mapping);
+            }
+        }
 
         Ok(maps)
     }
