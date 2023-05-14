@@ -428,9 +428,9 @@ fn main() -> Result<()> {
 
     println!("{:#x?}", exe.header);
 
-    for ph in exe.program_headers() {
-        println!("{ph:#x?}");
-
+    let shnames = exe.string_table().unwrap();
+    for (ii, sh) in exe.section_headers().enumerate() {
+        println!("{ii:x}: {}", shnames.get_string(sh.sh_name));
     }
 
     Ok(())

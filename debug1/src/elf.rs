@@ -127,21 +127,6 @@ macro_rules! consume {
     }}
 }
 
-#[derive(Debug)]
-#[repr(C)]
-pub struct ElfIdent {
-    pub ei_magic: [u8; 4],
-    pub ei_class: u8,
-    pub ei_data: u8,
-    pub ei_version: u8,
-    pub ei_osabi: u8,
-    pub ei_abiversion: u8,
-    pub ei_pad: [u8; 7],
-}
-
-// ElfIdent should be 16 bytes long
-const _: () = assert!(size_of::<ElfIdent>() == 16);
-
 /// SAFETY: ElfIdent has no padding, any bit pattern is valid
 unsafe impl Pod for ElfIdent {}
 
@@ -174,6 +159,20 @@ impl<T: Pod> Zeroed<T> {
     }
 }
 
+#[derive(Debug)]
+#[repr(C)]
+pub struct ElfIdent {
+    pub ei_magic: [u8; 4],
+    pub ei_class: u8,
+    pub ei_data: u8,
+    pub ei_version: u8,
+    pub ei_osabi: u8,
+    pub ei_abiversion: u8,
+    pub ei_pad: [u8; 7],
+}
+
+// ElfIdent should be 16 bytes long
+const _: () = assert!(size_of::<ElfIdent>() == 16);
 
 #[derive(Debug)]
 #[repr(C)]
@@ -217,16 +216,16 @@ const _: () = assert!(size_of::<Elf64ProgramHeader>() == 56);
 #[derive(Debug)]
 #[repr(C)]
 pub struct Elf64SectionHeader {
-    sh_name: u32,
-    sh_type: u32,
-    sh_flags: u64,
-    sh_addr: u64,
-    sh_offset: u64,
-    sh_size: u64,
-    sh_link: u32,
-    sh_info: u32,
-    sh_addralign: u64,
-    sh_entsize: u64,
+    pub sh_name: u32,
+    pub sh_type: u32,
+    pub sh_flags: u64,
+    pub sh_addr: u64,
+    pub sh_offset: u64,
+    pub sh_size: u64,
+    pub sh_link: u32,
+    pub sh_info: u32,
+    pub sh_addralign: u64,
+    pub sh_entsize: u64,
 }
 
 // Elf64SectionHeader should be  bytes long
@@ -240,7 +239,7 @@ pub struct Elf64LE<'a> {
 }
 
 impl<'a> Elf64LE<'a> {
-    /// initialise from a 64 bit LE elf file
+    /// initialise from a slice of bytes
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Elf64LE<'a>> {
 
         // read the ElfIdent from the file
@@ -297,7 +296,7 @@ impl<'a> Elf64LE<'a> {
         // entries in the program header table is held in the sh_info member of the initial entry
         // in section header table. Otherwise, the sh_info member of the initial entry contains the
         // value zero."
-        assert!(self.header.e_phnum != 0xffff);
+        assert!(self.header.e_phnum < 0xffff);
 
         PhIter {
             bytes: &self.bytes,
@@ -309,6 +308,17 @@ impl<'a> Elf64LE<'a> {
     }
 
     pub fn section_headers(&self) -> ShIter<'_> {
+        // TODO: man elf: "If the number of entries in the section header table is larger than or
+        // equal to SHN_LORESERVE (0xff00), e_shnum holds the value zero and the real number of
+        // entries in the section header table is held in the sh_size member of the initial entry
+        // in section header table. Otherwise, the sh_size member of the initial entry in the
+        // section header table holds the value zero."
+
+        // table is empty or we have some entires but fewer than SHN_LORESERVE
+        assert!(
+            self.header.e_shoff == 0 ||
+            (self.header.e_shnum > 0 && self.header.e_shnum < 0xff00));
+
         ShIter {
             bytes: self.bytes,
             file_offset: self.header.e_shoff,
@@ -317,6 +327,45 @@ impl<'a> Elf64LE<'a> {
             next: 0,
         }
     }
+
+    pub fn string_table(&self) -> Option<StringTable<'_>> {
+        if self.header.e_shstrndx == 0 {
+            // no string table
+            None
+        } else {
+            // TODO: man elf: "If the index of section name string table section is larger than or
+            // equal to SHN_LORESERVE (0xff00), this member holds SHN_XINDEX (0xffff) and the
+            // real index of the section name string table section is held in the sh_link member of
+            // the initial entry in section header table. Otherwise, the sh_link member of the
+            // initial entry in section header table contains the value zero."
+            assert!(
+                self.header.e_shstrndx != 0xffff &&
+                self.header.e_shstrndx < 0xff00);
+            let sh_offset =
+                self.header.e_shoff as usize +
+                self.header.e_shentsize as usize * self.header.e_shstrndx as usize;
+
+            let sh = parse_sectionheader(&self.bytes[sh_offset..]);
+
+            Some(StringTable {
+                bytes: &self.bytes[sh.sh_offset as usize..][..sh.sh_size as usize]
+            })
+        }
+    }
+}
+
+pub struct StringTable<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> StringTable<'a> {
+   pub fn get_string(&self, index: u32) -> &str {
+       // TODO: error handling
+       let cstr =
+           std::ffi::CStr::from_bytes_until_nul(&self.bytes[index as usize..]).unwrap();
+
+       cstr.to_str().unwrap()
+   }
 }
 
 pub struct PhIter<'a> {
@@ -331,7 +380,9 @@ impl<'a> Iterator for PhIter<'a> {
     type Item = Elf64ProgramHeader;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.next == self.entry_num {
+        if self.file_offset == 0 {
+            None
+        } else if self.next == self.entry_num {
             None
         } else {
             let current_file_offset =
@@ -368,11 +419,33 @@ pub struct ShIter<'a> {
     next: u16,
 }
 
+fn parse_sectionheader(bytes: &[u8]) -> Elf64SectionHeader {
+    let mut buf = &bytes[..size_of::<Elf64SectionHeader>()];
+
+    let header = Elf64SectionHeader {
+        sh_name: consume!(buf, u32).unwrap(),
+        sh_type: consume!(buf, u32).unwrap(),
+        sh_flags: consume!(buf, u64).unwrap(),
+        sh_addr: consume!(buf, u64).unwrap(),
+        sh_offset: consume!(buf, u64).unwrap(),
+        sh_size: consume!(buf, u64).unwrap(),
+        sh_link: consume!(buf, u32).unwrap(),
+        sh_info: consume!(buf, u32).unwrap(),
+        sh_addralign: consume!(buf, u64).unwrap(),
+        sh_entsize: consume!(buf, u64).unwrap(),
+    };
+    let _ = buf;
+
+    header
+}
+
 impl<'a> Iterator for ShIter<'a> {
     type Item = Elf64SectionHeader;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.next == self.entry_num {
+        if self.file_offset == 0 {
+            None
+        } else if self.next == self.entry_num {
             None
         } else {
             let current_file_offset =
@@ -380,21 +453,8 @@ impl<'a> Iterator for ShIter<'a> {
                 self.next as usize * self.entry_size as usize;
 
             // read the next section header from the file
-            let mut buf = &self.bytes[current_file_offset..][..size_of::<Elf64SectionHeader>()];
-
-            let header = Elf64SectionHeader {
-                sh_name: consume!(buf, u32).unwrap(),
-                sh_type: consume!(buf, u32).unwrap(),
-                sh_flags: consume!(buf, u64).unwrap(),
-                sh_addr: consume!(buf, u64).unwrap(),
-                sh_offset: consume!(buf, u64).unwrap(),
-                sh_size: consume!(buf, u64).unwrap(),
-                sh_link: consume!(buf, u32).unwrap(),
-                sh_info: consume!(buf, u32).unwrap(),
-                sh_addralign: consume!(buf, u64).unwrap(),
-                sh_entsize: consume!(buf, u64).unwrap(),
-            };
-            let _ = buf;
+            let buf = &self.bytes[current_file_offset..];
+            let header = parse_sectionheader(buf);
 
             self.next += 1;
 
@@ -402,41 +462,3 @@ impl<'a> Iterator for ShIter<'a> {
         }
     }
 }
-
-/*
-$ ../riscv-rv32i/bin/riscv32-unknown-elf-readelf -lh --dynamic ../test/test
-ELF Header:
-  Magic:   7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00
-  Class:                             ELF32
-  Data:                              2's complement, little endian
-  Version:                           1 (current)
-  OS/ABI:                            UNIX - System V
-  ABI Version:                       0
-  Type:                              EXEC (Executable file)
-  Machine:                           RISC-V
-  Version:                           0x1
-  Entry point address:               0x100dc
-  Start of program headers:          52 (bytes into file)
-  Start of section headers:          23328 (bytes into file)
-  Flags:                             0x0
-  Size of this header:               52 (bytes)
-  Size of program headers:           32 (bytes)
-  Number of program headers:         3
-  Size of section headers:           40 (bytes)
-  Number of section headers:         21
-  Section header string table index: 20
-
-Program Headers:
-  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
-  RISCV_ATTRIBUT 0x003ee5 0x00000000 0x00000000 0x0001c 0x00000 R   0x1
-  LOAD           0x000000 0x00010000 0x00010000 0x0366e 0x0366e R E 0x1000
-  LOAD           0x003670 0x00014670 0x00014670 0x00854 0x008ac RW  0x1000
-
- Section to Segment mapping:
-  Segment Sections...
-   00     .riscv.attributes
-   01     .text .rodata
-   02     .eh_frame .init_array .fini_array .data .sdata .sbss .bss
-
-There is no dynamic section in this file.
-*/
