@@ -234,20 +234,18 @@ const _: () = assert!(size_of::<Elf64SectionHeader>() == 64);
 
 
 #[derive(Debug)]
-pub struct Elf {
+pub struct Elf64LE<'a> {
+    pub bytes: &'a [u8],
     pub header: Elf64Header,
-    pub file: std::fs::File,
 }
 
-impl Elf {
+impl<'a> Elf64LE<'a> {
     /// initialise from a 64 bit LE elf file
-    pub fn from_elf64le<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
-
-        let mut file = std::fs::File::open(path).map_err(Error::ReadFile)?;
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Elf64LE<'a>> {
 
         // read the ElfIdent from the file
         let mut e_ident = Zeroed::<ElfIdent>::new();
-        file.read_exact(e_ident.as_buf_mut()).map_err(Error::ReadFile)?;
+        e_ident.as_buf_mut().copy_from_slice(&bytes[..16]);
         let e_ident = e_ident.get();
 
         // verify that it
@@ -263,9 +261,7 @@ impl Elf {
         // read the rest of the header
 
         // full header length is 64 bytes, the first 16 are the ident
-        let mut buf = [0u8; 64 - 16];
-        file.read_exact(buf.as_mut()).map_err(Error::ReadFile)?;
-        let mut buf = buf.as_ref();
+        let mut buf = &bytes[16..64];
         let header = Elf64Header {
             e_ident,
             e_type: consume!(buf, u16).unwrap(),
@@ -287,15 +283,15 @@ impl Elf {
 
         assert!(header.e_phentsize as usize >= size_of::<Elf64ProgramHeader>());
 
-        let elf = Elf {
+        let elf = Elf64LE {
             header,
-            file,
+            bytes,
         };
 
         Ok(elf)
     }
 
-    pub fn program_headers(&mut self) -> PhIter<'_> {
+    pub fn program_headers(&self) -> PhIter<'_> {
         // TODO: man elf: "If the number of entries in the program header table is larger than or
         // equal to PN_XNUM (0xffff), this member holds PN_XNUM (0xffff) and the real number of
         // entries in the program header table is held in the sh_info member of the initial entry
@@ -304,7 +300,7 @@ impl Elf {
         assert!(self.header.e_phnum != 0xffff);
 
         PhIter {
-            file: &mut self.file,
+            bytes: &self.bytes,
             file_offset: self.header.e_phoff,
             entry_num: self.header.e_phnum,
             entry_size: self.header.e_phentsize,
@@ -312,9 +308,9 @@ impl Elf {
         }
     }
 
-    pub fn section_headers(&mut self) -> ShIter<'_> {
+    pub fn section_headers(&self) -> ShIter<'_> {
         ShIter {
-            file: &mut self.file,
+            bytes: self.bytes,
             file_offset: self.header.e_shoff,
             entry_num: self.header.e_shnum,
             entry_size: self.header.e_shentsize,
@@ -324,7 +320,7 @@ impl Elf {
 }
 
 pub struct PhIter<'a> {
-    file: &'a mut std::fs::File,
+    bytes: &'a [u8],
     file_offset: u64,
     entry_num: u16,
     entry_size: u16,
@@ -339,15 +335,11 @@ impl<'a> Iterator for PhIter<'a> {
             None
         } else {
             let current_file_offset =
-                self.file_offset +
-                self.next as u64 * self.entry_size as u64;
+                self.file_offset as usize +
+                self.next as usize * self.entry_size as usize;
 
-            // TODO: panic instead? malformed elf file if this doesn't succeed.
-            self.file.seek(SeekFrom::Start(current_file_offset)).ok()?;
             // read the next program header from the file
-            let mut buf = [0u8; size_of::<Elf64ProgramHeader>()];
-            self.file.read_exact(buf.as_mut()).map_err(Error::ReadFile).ok()?;
-            let mut buf = buf.as_ref();
+            let mut buf = &self.bytes[current_file_offset..][..size_of::<Elf64ProgramHeader>()];
 
             let header = Elf64ProgramHeader {
                 p_type: consume!(buf, u32).unwrap(),
@@ -369,7 +361,7 @@ impl<'a> Iterator for PhIter<'a> {
 }
 
 pub struct ShIter<'a> {
-    file: &'a mut std::fs::File,
+    bytes: &'a [u8],
     file_offset: u64,
     entry_num: u16,
     entry_size: u16,
@@ -384,15 +376,11 @@ impl<'a> Iterator for ShIter<'a> {
             None
         } else {
             let current_file_offset =
-                self.file_offset +
-                self.next as u64 * self.entry_size as u64;
+                self.file_offset as usize +
+                self.next as usize * self.entry_size as usize;
 
-            // TODO: panic instead? malformed elf file if this doesn't succeed.
-            self.file.seek(SeekFrom::Start(current_file_offset)).ok()?;
             // read the next section header from the file
-            let mut buf = [0u8; size_of::<Elf64SectionHeader>()];
-            self.file.read_exact(buf.as_mut()).map_err(Error::ReadFile).ok()?;
-            let mut buf = buf.as_ref();
+            let mut buf = &self.bytes[current_file_offset..][..size_of::<Elf64SectionHeader>()];
 
             let header = Elf64SectionHeader {
                 sh_name: consume!(buf, u32).unwrap(),

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::io::BufRead;
+use std::io::Read;
 use libc;
 
 mod elf;
@@ -420,9 +421,12 @@ fn main() -> Result<()> {
     // symbols and breakpoints
     // get syms by nm? no need more info to map loaded code to original exes/dlls
 
-    let mut exe = elf::Elf::from_elf64le("g/t").unwrap();
+    let mut exe = std::fs::File::open("g/t").unwrap();
+    let mut bytes = Vec::new();
+    exe.read_to_end(&mut bytes).unwrap();
+    let exe = elf::Elf64LE::from_bytes(&bytes[..]).unwrap();
 
-    println!("{exe:#x?}");
+    println!("{:#x?}", exe.header);
 
     for ph in exe.program_headers() {
         println!("{ph:#x?}");
