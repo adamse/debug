@@ -8,7 +8,6 @@ pub enum Error {
     InvalidElf(ElfIdent),
 }
 
-
 pub type Result<Res> = std::result::Result<Res, Error>;
 
 /// elf.h constants
