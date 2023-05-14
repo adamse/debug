@@ -27,17 +27,25 @@ fn main() {
     let memmap = debugger.memory_map().unwrap();
 
     // find the file exe/so we're executing in the main thread
-    let pathname = memmap.iter().find(|map| regs.rip >= map.start && regs.rip <= map.end)
-        .and_then(|map| map.pathname.as_ref()).unwrap();
+    let map = memmap.iter()
+        .find(|map| regs.rip >= map.start && regs.rip <= map.end).unwrap();
+    let pathname = map.pathname.as_ref().unwrap();
 
     println!("{pathname}");
+
+    // read the next instructions
+    let mut buf = vec![0u8; 20];
+    let read = debugger.read_memory(regs.rip, &mut buf[..]).unwrap();
+    let buf = &buf[..read];
+
+    println!("{buf:x?}");
 
     let mut elf = std::fs::File::open(pathname).unwrap();
     let mut bytes = Vec::new();
     elf.read_to_end(&mut bytes).unwrap();
     let elf = elf::Elf64LE::from_bytes(&bytes[..]).unwrap();
 
-    println!("{:#x?}", elf.header);
+    // println!("{:#x?}", elf.header);
 
     let shnames = elf.string_table().unwrap();
     for (ii, sh) in elf.section_headers().enumerate() {

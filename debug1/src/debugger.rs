@@ -157,6 +157,33 @@ mod ptrace {
         Ok(unsafe { regs.assume_init() })
     }
 
+    /// returns the number of actual bytes read
+    pub fn readv(Pid(pid): Pid, start: u64, buf: &mut [u8]) -> Result<usize> {
+        let local_iov = libc::iovec {
+            iov_base: buf.as_mut_ptr() as _,
+            iov_len: buf.len(),
+        };
+        let remote_iov = libc::iovec {
+            iov_base: start as *mut _,
+            iov_len: buf.len(),
+        };
+
+        let res = unsafe { libc::process_vm_readv(
+            pid,
+            &local_iov as *const _,
+            1,
+            &remote_iov as *const _,
+            1,
+            0)
+        };
+
+        if res == -1 {
+            return Err(Error::ptrace());
+        }
+
+        Ok(res as usize)
+    }
+
     /// wait for an event and return the pid where it happened
     pub fn waitid_all() -> Result<Pid> {
         let mut siginfo = MaybeUninit::<libc::siginfo_t>::zeroed();
@@ -338,6 +365,11 @@ impl Debugger {
         Ok(names)
     }
 
+    /// read `buf.len()` memory at `start` in the debugged process
+    pub fn read_memory(&self, start: u64, buf: &mut [u8]) -> Result<usize> {
+        ptrace::readv(self.process, start, buf)
+    }
+
     /// get the memory map for the process
     pub fn memory_map(&self) -> Result<Vec<Mapping>> {
         let pid = self.process.0;
@@ -397,6 +429,3 @@ impl Drop for Debugger {
         }
     }
 }
-
-
-
