@@ -1,16 +1,9 @@
-use std::io::{Read, Seek, SeekFrom};
-use std::collections::HashMap;
 use std::mem::{MaybeUninit, size_of};
-
-use libc;
 
 use crate::pod::*;
 
 #[derive(Debug)]
 pub enum Error {
-    /// file reading error
-    ReadFile(std::io::Error),
-
     /// elf type was not as expected
     InvalidElf(ElfIdent),
 }
@@ -18,82 +11,26 @@ pub enum Error {
 
 pub type Result<Res> = std::result::Result<Res, Error>;
 
+/// elf.h constants
+mod elf {
+    /// elf class 64 bits
+    pub const ELFCLASS64: u8 = 2;
 
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct Flags(u32);
+    /// elf data 2s complement, little endian
+    pub const ELFDATA2LSB: u8 = 1;
 
-impl Flags {
-    /// Is the segment readable
-    pub fn r(self) -> bool {
-        self.0 & 0x4 != 0
-    }
+    /// indicates that the number of program headers is to large to fit into e_phnum
+    pub const PN_XNUM: u16 = 0xffff;
 
-    /// Is the segment writable
-    pub fn w(self) -> bool {
-        self.0 & 0x2 != 0
-    }
-
-    /// Is the segment executable
-    pub fn x(self) -> bool {
-        self.0 & 0x1 != 0
-    }
+    /// undefined section
+    pub const SHN_UNDEF: u16 = 0;
+    /// start of reserved indices
+    pub const SHN_LORESERVE: u16 = 0xff00;
+    /// index is in an extra table
+    pub const SHN_XINDEX: u16 = 0xffff;
 }
 
-impl std::fmt::Debug for Flags {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut flags = String::new();
-        if self.r() {
-            flags += "R";
-        } else {
-            flags += "-";
-        }
-        if self.w() {
-            flags += "W";
-        } else {
-            flags += "-";
-        }
-        if self.x() {
-            flags += "X";
-        } else {
-            flags += "-";
-        }
-        write!(fmt, "{flags}")
-    }
-}
-
-
-/// A segment in an ELF file
-///
-#[derive(Debug, Clone)]
-pub struct Segment {
-    /// Offset in file
-    pub file_offset: u32,
-
-    /// Size in file
-    pub file_size: u32,
-
-    /// Address to load at
-    pub load_address: u32,
-
-    /// Size in memory
-    pub size: u32,
-
-    /// Flags
-    pub flags: Flags,
-
-    /// Data in segment
-    ///
-    /// This is only the data in the file, length is file_size.
-    pub data: Box<[u8]>,
-}
-
-#[derive(Debug)]
-pub struct Symbol {
-}
-
-
-// slice.split_array_ref is nightly, copy it here
+/// `slice.split_array_ref` is nightly, copy it here
 fn split_array_ref<const N: usize, T>(arr: &[T]) -> (&[T; N], &[T]) {
     let (a, b) = arr.split_at(N);
 
@@ -252,8 +189,8 @@ impl<'a> Elf64LE<'a> {
         // - is 64 bit
         // - is little endian
         if e_ident.ei_magic != [0x7f, 0x45, 0x4c, 0x46] ||
-            e_ident.ei_class != libc::ELFCLASS64 ||
-            e_ident.ei_data != libc::ELFDATA2LSB {
+            e_ident.ei_class != elf::ELFCLASS64 ||
+            e_ident.ei_data != elf::ELFDATA2LSB {
             return Err(Error::InvalidElf(e_ident));
         }
 
@@ -290,13 +227,14 @@ impl<'a> Elf64LE<'a> {
         Ok(elf)
     }
 
+    /// get an iterator for the program headers
     pub fn program_headers(&self) -> PhIter<'_> {
         // TODO: man elf: "If the number of entries in the program header table is larger than or
         // equal to PN_XNUM (0xffff), this member holds PN_XNUM (0xffff) and the real number of
         // entries in the program header table is held in the sh_info member of the initial entry
         // in section header table. Otherwise, the sh_info member of the initial entry contains the
         // value zero."
-        assert!(self.header.e_phnum < 0xffff);
+        assert!(self.header.e_phnum < elf::PN_XNUM);
 
         PhIter {
             bytes: &self.bytes,
@@ -307,6 +245,7 @@ impl<'a> Elf64LE<'a> {
         }
     }
 
+    /// get an iterator for the section headers
     pub fn section_headers(&self) -> ShIter<'_> {
         // TODO: man elf: "If the number of entries in the section header table is larger than or
         // equal to SHN_LORESERVE (0xff00), e_shnum holds the value zero and the real number of
@@ -317,7 +256,7 @@ impl<'a> Elf64LE<'a> {
         // table is empty or we have some entires but fewer than SHN_LORESERVE
         assert!(
             self.header.e_shoff == 0 ||
-            (self.header.e_shnum > 0 && self.header.e_shnum < 0xff00));
+            (self.header.e_shnum > 0 && self.header.e_shnum < elf::SHN_LORESERVE));
 
         ShIter {
             bytes: self.bytes,
@@ -328,8 +267,9 @@ impl<'a> Elf64LE<'a> {
         }
     }
 
+    /// get the string table for the section header names
     pub fn string_table(&self) -> Option<StringTable<'_>> {
-        if self.header.e_shstrndx == 0 {
+        if self.header.e_shstrndx == elf::SHN_UNDEF {
             // no string table
             None
         } else {
@@ -339,8 +279,8 @@ impl<'a> Elf64LE<'a> {
             // the initial entry in section header table. Otherwise, the sh_link member of the
             // initial entry in section header table contains the value zero."
             assert!(
-                self.header.e_shstrndx != 0xffff &&
-                self.header.e_shstrndx < 0xff00);
+                self.header.e_shstrndx != elf::SHN_XINDEX &&
+                self.header.e_shstrndx < elf::SHN_LORESERVE);
             let sh_offset =
                 self.header.e_shoff as usize +
                 self.header.e_shentsize as usize * self.header.e_shstrndx as usize;
@@ -354,20 +294,23 @@ impl<'a> Elf64LE<'a> {
     }
 }
 
+/// A string table section
 pub struct StringTable<'a> {
     bytes: &'a [u8],
 }
 
 impl<'a> StringTable<'a> {
-   pub fn get_string(&self, index: u32) -> &str {
-       // TODO: error handling
-       let cstr =
-           std::ffi::CStr::from_bytes_until_nul(&self.bytes[index as usize..]).unwrap();
+    /// get the string at `index` in this string table.
+    pub fn get_string(&self, index: u32) -> &str {
+        // TODO: error handling
+        let cstr =
+            std::ffi::CStr::from_bytes_until_nul(&self.bytes[index as usize..]).unwrap();
 
-       cstr.to_str().unwrap()
-   }
+        cstr.to_str().unwrap()
+    }
 }
 
+/// program header iterator
 pub struct PhIter<'a> {
     bytes: &'a [u8],
     file_offset: u64,
@@ -411,6 +354,7 @@ impl<'a> Iterator for PhIter<'a> {
     }
 }
 
+/// section header iterator
 pub struct ShIter<'a> {
     bytes: &'a [u8],
     file_offset: u64,
@@ -419,6 +363,7 @@ pub struct ShIter<'a> {
     next: u16,
 }
 
+/// parse a `Elf64SectionHeader`.
 fn parse_sectionheader(bytes: &[u8]) -> Elf64SectionHeader {
     let mut buf = &bytes[..size_of::<Elf64SectionHeader>()];
 
