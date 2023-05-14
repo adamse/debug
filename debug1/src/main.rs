@@ -3,6 +3,9 @@ use std::mem::MaybeUninit;
 use std::io::BufRead;
 use libc;
 
+mod elf;
+mod pod;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
@@ -410,9 +413,21 @@ fn main() -> Result<()> {
 
     let debugger = Debugger::attach_process(process)?;
 
-    println!("{:#x?}", debugger.regs(process)?);
-    println!("{:?}", debugger.thread_names()?);
-    println!("{:#x?}", debugger.memory_map()?);
+    // println!("{:#x?}", debugger.regs(process)?);
+    // println!("{:?}", debugger.thread_names()?);
+    // println!("{:#x?}", debugger.memory_map()?);
+
+    // symbols and breakpoints
+    // get syms by nm? no need more info to map loaded code to original exes/dlls
+
+    let mut exe = elf::Elf::from_elf64le("g/t").unwrap();
+
+    println!("{exe:#x?}");
+
+    for ph in exe.program_headers() {
+        println!("{ph:#x?}");
+
+    }
 
     Ok(())
 }
