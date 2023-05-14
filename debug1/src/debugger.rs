@@ -116,7 +116,7 @@ mod ptrace {
             return Err(Error::ptrace());
         }
 
-        println!("ok");
+        println!(" ok");
         Ok(())
     }
 
@@ -133,7 +133,7 @@ mod ptrace {
             return Err(Error::ptrace());
         }
 
-        println!("ok");
+        println!(" ok");
         Ok(())
     }
 
@@ -152,7 +152,7 @@ mod ptrace {
             return Err(Error::ptrace());
         }
 
-        println!("ok");
+        println!(" ok");
         // OK: ptrace has filled in the struct
         Ok(unsafe { regs.assume_init() })
     }
